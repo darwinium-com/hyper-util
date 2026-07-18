@@ -1744,7 +1744,10 @@ impl Error {
             ..self
         }
     }
-    fn is_canceled(&self) -> bool {
+
+    /// Returns true if this error means the request was never dispatched onto the wire,
+    /// it is always safe to retry on a new connection.
+    pub fn is_canceled(&self) -> bool {
         matches!(self.kind, ErrorKind::Canceled)
     }
 

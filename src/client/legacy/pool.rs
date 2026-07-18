@@ -173,6 +173,20 @@ impl<T: Poolable, K: Key> Pool<T, K> {
         }
     }
 
+    /// Count of currently-idle, currently-usable (`is_open()`) connections for `key`.
+    pub fn idle_count(&self, key: &K) -> usize {
+        let Some(ref enabled) = self.inner else {
+            return 0;
+        };
+
+        let inner = enabled.lock().unwrap();
+        inner
+            .idle
+            .get(key)
+            .map(|list| list.iter().filter(|entry| entry.value.is_open()).count())
+            .unwrap_or(0)
+    }
+
     /// Ensure that there is only ever 1 connecting task for HTTP/2
     /// connections. This does nothing for HTTP/1.
     pub fn connecting(&self, key: &K, ver: Ver) -> Option<Connecting<T, K>> {
@@ -1136,6 +1150,29 @@ mod tests {
         );
 
         assert!(!pool.locked().idle.contains_key(&key));
+    }
+
+    #[test]
+    fn test_idle_count() {
+        let pool = pool_no_timer::<CanClose, KeyImpl>();
+        let key = host_key("foo");
+
+        assert_eq!(pool.idle_count(&key), 0, "nothing pooled yet for this key");
+
+        let pooled = pool.pooled(c(key.clone()), CanClose { val: 1, closed: false });
+        assert_eq!(pool.idle_count(&key), 0, "not idle until returned");
+        drop(pooled);
+        assert_eq!(pool.idle_count(&key), 1, "one live connection now idle");
+
+        let closed_pooled = pool.pooled(c(key.clone()), CanClose { val: 2, closed: true });
+        drop(closed_pooled);
+        assert_eq!(pool.idle_count(&key), 1, "closed connection was not reinserted, count unchanged");
+
+        // Checking the count is read-only: repeated calls don't evict or otherwise change anything.
+        assert_eq!(pool.idle_count(&key), 1);
+        assert_eq!(pool.locked().idle.get(&key).map(|l| l.len()), Some(1));
+
+        assert_eq!(pool.idle_count(&host_key("bar")), 0, "unrelated key stays unaffected");
     }
 
     /// A `Poolable` whose sharing behavior is chosen per-instance, so a single

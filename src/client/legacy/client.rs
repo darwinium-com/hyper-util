@@ -664,6 +664,25 @@ where
             )
         })
     }
+
+    /// Establish a new connection for `(scheme, authority)` and deposit it
+    /// into the idle pool, without going through checkout.
+    ///
+    /// Intended for external callers (e.g. a pool pre-warming task) that
+    /// want to top up idle capacity ahead of demand, so a subsequent real
+    /// request doesn't have to pay full connect+handshake latency.
+    #[cfg(any(feature = "http1", feature = "http2"))]
+    pub async fn prewarm(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> Result<(), Error> {
+        let pool_key: PoolKey = (scheme, authority);
+        self.connect_to(pool_key).await.map(|_pooled| ())
+    }
+
+    /// Count of currently-idle, currently-usable connections for
+    /// `(scheme, authority)`. See [`pool::Pool::idle_count`].
+    pub fn idle_count(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> usize {
+        let pool_key: PoolKey = (scheme, authority);
+        self.pool.idle_count(&pool_key)
+    }
 }
 
 impl<C, B> tower_service::Service<Request<B>> for Client<C, B>
@@ -1042,6 +1061,7 @@ impl Builder {
             h2_builder: hyper::client::conn::http2::Builder::new(exec),
             pool_config: pool::Config {
                 idle_timeout: Some(Duration::from_secs(90)),
+                idle_timeout_http2: None,
                 max_idle_per_host: usize::MAX,
             },
             pool_timer: None,
@@ -1077,6 +1097,32 @@ impl Builder {
         D: Into<Option<Duration>>,
     {
         self.pool_config.idle_timeout = val.into();
+        self
+    }
+
+    /// Set a dedicated idle timeout for pooled HTTP/2 connections.
+    ///
+    /// HTTP/2 connections can be kept alive via `http2_keep_alive_while_idle`,
+    /// so it often makes sense to allow them to remain idle in the pool
+    /// longer than HTTP/1 connections (which have no active liveness check
+    /// while idle). For a generic proxy client, whether a given origin will
+    /// actually negotiate HTTP/1 or HTTP/2 is often not known ahead of time
+    /// — it depends on ALPN at connect time, not something decidable up
+    /// front at configuration/init time — so a single `pool_idle_timeout`
+    /// can't just be tuned per origin in advance. This timeout is instead
+    /// applied per pooled entry, based on whichever protocol that specific
+    /// connection actually turned out to be once connected.
+    ///
+    /// If not set (the default), HTTP/2 connections use the same
+    /// `pool_idle_timeout` as HTTP/1 connections — existing behavior,
+    /// unchanged.
+    ///
+    /// A `Timer` is required for this to take effect. See `Builder::pool_timer`.
+    pub fn http2_pool_idle_timeout<D>(&mut self, val: D) -> &mut Self
+    where
+        D: Into<Option<Duration>>,
+    {
+        self.pool_config.idle_timeout_http2 = val.into();
         self
     }
 
@@ -1698,7 +1744,10 @@ impl Error {
             ..self
         }
     }
-    fn is_canceled(&self) -> bool {
+
+    /// Returns true if this error means the request was never dispatched onto the wire,
+    /// it is always safe to retry on a new connection.
+    pub fn is_canceled(&self) -> bool {
         matches!(self.kind, ErrorKind::Canceled)
     }
 

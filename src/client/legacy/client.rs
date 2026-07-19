@@ -677,6 +677,15 @@ where
         self.connect_to(pool_key).await.map(|_pooled| ())
     }
 
+    // check the origin connection for `(scheme, authority)` and drop the connection
+    #[cfg(any(feature = "http1", feature = "http2"))]
+    pub async fn probe(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> Result<(), Error> {
+        let pool_key: PoolKey = (scheme, authority);
+        let pooled = self.connect_to(pool_key).await?;
+        pooled.forget();
+        Ok(())
+    }
+
     /// Count of currently-idle, currently-usable connections for
     /// `(scheme, authority)`. See [`pool::Pool::idle_count`].
     pub fn idle_count(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> usize {

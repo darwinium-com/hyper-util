@@ -570,6 +570,10 @@ impl<T: Poolable, K: Key> Pooled<T, K> {
         self.pool.0.is_some()
     }
 
+    pub(crate) fn forget(mut self) {
+        self.value.take();
+    }
+
     fn as_ref(&self) -> &T {
         self.value.as_ref().expect("not dropped")
     }

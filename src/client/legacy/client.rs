@@ -664,6 +664,40 @@ where
             )
         })
     }
+
+    /// Establish a new connection for `(scheme, authority)` and deposit it
+    /// into the idle pool
+    ///
+    /// Intended for external callers (e.g. a pool pre-warming task) that
+    /// want to top up idle capacity ahead of demand;
+    /// if another connect is already in progress, this may wait via the pool.
+    /// request doesn't have to pay full connect+handshake latency.
+    #[cfg(any(feature = "http1", feature = "http2"))]
+    pub async fn prewarm(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> Result<(), Error> {
+        if !self.pool.is_enabled() {
+            return Ok(());
+        }
+
+        let pool_key: PoolKey = (scheme, authority);
+        match self.connect_to(pool_key.clone()).await {
+            Ok(_pooled) => Ok(()),
+            Err(err) if err.is_canceled() => self
+                .pool
+                .checkout(pool_key)
+                .await
+                .map(|_pooled| ())
+                .map_err(|err| e!(Connect, err)),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Count of currently-idle, currently-usable connections for
+    /// `(scheme, authority)`. See [`pool::Pool::idle_count`].
+    /// This is a read-only snapshot: it does not evict or prune entries.
+    pub fn idle_count(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> usize {
+        let pool_key: PoolKey = (scheme, authority);
+        self.pool.idle_count(&pool_key)
+    }
 }
 
 impl<C, B> tower_service::Service<Request<B>> for Client<C, B>
@@ -1698,7 +1732,10 @@ impl Error {
             ..self
         }
     }
-    fn is_canceled(&self) -> bool {
+
+    /// Returns true if this error means the request was never dispatched onto the wire,
+    /// it is always safe to retry on a new connection.
+    pub fn is_canceled(&self) -> bool {
         matches!(self.kind, ErrorKind::Canceled)
     }
 

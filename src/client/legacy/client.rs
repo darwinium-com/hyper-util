@@ -673,6 +673,10 @@ where
     /// request doesn't have to pay full connect+handshake latency.
     #[cfg(any(feature = "http1", feature = "http2"))]
     pub async fn prewarm(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> Result<(), Error> {
+        if !self.pool.is_enabled() {
+            return Ok(());
+        }
+
         let pool_key: PoolKey = (scheme, authority);
         match self.connect_to(pool_key.clone()).await {
             Ok(_pooled) => Ok(()),

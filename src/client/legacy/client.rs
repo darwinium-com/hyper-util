@@ -664,6 +664,34 @@ where
             )
         })
     }
+
+    /// Establish a new connection for `(scheme, authority)` and deposit it
+    /// into the idle pool, without going through checkout.
+    ///
+    /// Intended for external callers (e.g. a pool pre-warming task) that
+    /// want to top up idle capacity ahead of demand, so a subsequent real
+    /// request doesn't have to pay full connect+handshake latency.
+    #[cfg(any(feature = "http1", feature = "http2"))]
+    pub async fn prewarm(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> Result<(), Error> {
+        let pool_key: PoolKey = (scheme, authority);
+        match self.connect_to(pool_key.clone()).await {
+            Ok(_pooled) => Ok(()),
+            Err(err) if err.is_canceled() => self
+                .pool
+                .checkout(pool_key)
+                .await
+                .map(|_pooled| ())
+                .map_err(|err| e!(Connect, err)),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Count of currently-idle, currently-usable connections for
+    /// `(scheme, authority)`. See [`pool::Pool::idle_count`].
+    pub fn idle_count(&self, scheme: http::uri::Scheme, authority: http::uri::Authority) -> usize {
+        let pool_key: PoolKey = (scheme, authority);
+        self.pool.idle_count(&pool_key)
+    }
 }
 
 impl<C, B> tower_service::Service<Request<B>> for Client<C, B>
